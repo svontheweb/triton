@@ -93,7 +93,11 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
   auto packVec = [&](std::array<int, 3> dstIdx) {
     Value vec = b.undef(vecTy);
     for (auto i = 0; i < numElemsPerVec; ++i) {
-      auto elemIdx = dstToSrc.apply({{kReg, offset + i}})[0].second;
+      auto elemIdx =
+          dstToSrc
+              .apply(
+                  {{kReg, offset + i}, {kLane, 0}, {kWarp, 0}, {kBlock, 0}})[0]
+              .second;
       vec =
           b.insert_element(vec, b.bitcast(elems[elemIdx], eltTy), b.i32_val(i));
     }
