@@ -3,6 +3,7 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
@@ -78,16 +79,15 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
   auto dotDst = DotOperandEncodingAttr::get(ctx, dotSrc.getOpIdx(),
                                             dotSrc.getParent(), 32 / bitwidth);
   auto shape = type.getShape();
-  auto dotSrcLL = triton::gpu::toLinearLayout(shape, dotSrc);
-  auto dotDstLL = triton::gpu::toLinearLayout(shape, dotDst);
+  auto srcLL = triton::gpu::toLinearLayout(shape, dotSrc);
+  auto dstLL = triton::gpu::toLinearLayout(shape, dotDst);
 
   auto kReg = str_attr("register");
   auto kLane = str_attr("lane");
   auto kWarp = str_attr("warp");
   auto kBlock = str_attr("block");
-  auto dstToSrc = dotDstLL.invertAndCompose(dotSrcLL);
-  assert(dstToSrc.sublayoutIsZero({kLane, kWarp, kBlock},
-                                  {kLane, kWarp, kBlock}) &&
+  auto dstToSrc = dstLL.invertAndCompose(srcLL);
+  assert(squareSublayoutIsIdentity(dstToSrc, {kLane, kWarp, kBlock}) &&
          "Data transfer between lanes/warps/blocks is not expected");
 
   auto packVec = [&](std::array<int, 3> dstIdx) {
