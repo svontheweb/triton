@@ -1099,95 +1099,6 @@ LinearLayout chooseStMatrixLayoutNoLeadingOffset(MLIRContext *ctx,
           {{S("offset"), ret.getTotalOutDimSize()}, {S("iteration"), 1}});
 }
 
-LinearLayout chooseDotLdMatrixLayout(DotOperandEncodingAttr dot,
-                                     ArrayRef<int64_t> shape, bool needTrans,
-                                     int32_t elemBitWidth) {
-  auto ctx = dot.getContext();
-  auto mma = cast<NvidiaMmaEncodingAttr>(dot.getParent());
-  auto rank = shape.size();
-  auto opIdx = dot.getOpIdx();
-  int kDim = (opIdx == 0) ? rank - 1 : rank - 2;
-  int nonKDim = (opIdx == 0) ? rank - 2 : rank - 1;
-
-  StringAttr kReg = S("register");
-  StringAttr kLane = S("lane");
-  StringAttr kWarp = S("warp");
-  StringAttr kBlock = S("block");
-  StringAttr kInner = opIdx == 0 ? (needTrans ? S("dim0") : S("dim1"))
-                                 : (needTrans ? S("dim1") : S("dim0"));
-  StringAttr kOuter = opIdx == 0 ? (needTrans ? S("dim1") : S("dim0"))
-                                 : (needTrans ? S("dim0") : S("dim1"));
-
-  std::vector<std::vector<int>> basesReg;
-  for (int logReg = 0; logReg < llvm::Log2_32(8 * 16 / elemBitWidth);
-       logReg++) {
-    auto reg = 1 << logReg;
-    basesReg.push_back({0, reg});
-  }
-  std::vector<std::vector<int>> basesLane = {
-      {1, 0}, {2, 0}, {4, 0}, {0, 0}, {0, 0}};
-  bool kX2 = shape[kDim] > 8 * 16 / elemBitWidth;
-  bool kX4 = shape[kDim] > 16 * 16 / elemBitWidth;
-  bool nonKX2 = shape[nonKDim] > 8;
-  // Construct a tile consisting of 4 8x8x16bits sub-tiles to use ldmatrix
-  // efficiently. opIdx=0 and opIdx=1 are handled differently.
-  if (opIdx == 0) {
-    // The matrix elements of thread 0 are distributed in the following pattern
-    // (fp16):
-    //
-    //           col0       col8
-    //   row0  reg[0-1]   reg[4-5]
-    //   row8  reg[2-3]   reg[6-7]
-    if (needTrans) {
-      assert(elemBitWidth <= 16 && "Only elements smaller than 16 bits are "
-                                   "supported in the transposed mode");
-      if (nonKX2)
-        basesLane[3] = {0, 8};
-      if (kX2)
-        basesLane[4] = {8 * 16 / elemBitWidth, 0};
-    } else {
-      if (nonKX2)
-        basesLane[3] = {8, 0};
-      if (kX2)
-        basesLane[4] = {0, 8 * 16 / elemBitWidth};
-    }
-  } else {
-    // The matrix elements of thread 0 are distributed in the following pattern
-    // (fp16):
-    //
-    //           col0       col8      col16    col24
-    //   row0  reg[0-1]   reg[2-3]  reg[4-5]  reg[6-7]
-    if (needTrans) {
-      assert(elemBitWidth <= 16 && "Only elements smaller than 16 bits are "
-                                   "supported in the transposed mode");
-      if (kX2)
-        basesLane[3] = {8, 0};
-      if (kX4)
-        basesLane[4] = {16, 0};
-    } else {
-      if (kX2)
-        basesLane[3] = {0, 8 * 16 / elemBitWidth};
-      if (kX4)
-        basesLane[4] = {0, 16 * 16 / elemBitWidth};
-    }
-  }
-  int numTileCols =
-      (8 * 16 / elemBitWidth)
-      << (static_cast<int>(kX2) + static_cast<int>(kX4 && opIdx == 1));
-  // Expand the `register` dimension so the size of columns matches `K`.
-  auto layout =
-      LinearLayout({{kReg, basesReg}, {kLane, basesLane}, {kWarp, {}}},
-                   {kOuter, kInner}) *
-      LinearLayout::identity1D(shape[kDim] / numTileCols, kReg,
-                               S("dim" + std::to_string(kDim)));
-  // Expand the `warp` dimension according to warpsPerCTA.
-  auto warpsPerCTA = mma.getWarpsPerCTA();
-  layout *= broadcastedDotOperandLayout(ctx, warpsPerCTA, mma.getWarpOrder(),
-                                        kDim, kWarp)
-                .transposeOuts(llvm::to_vector(layout.getOutDimNames()));
-  return combineCtaCgaWithShape(layout, getCTALayout(dot), shape);
-}
-
 } // anonymous namespace
 
 LinearLayout chooseStMatrixLayout(MLIRContext *ctx, RankedTensorType tensorTy,
@@ -1199,10 +1110,69 @@ LinearLayout chooseStMatrixLayout(MLIRContext *ctx, RankedTensorType tensorTy,
     return chooseStMatrixLayoutLeadingOffset(ctx, tensorTy, swizzleByteSize);
 }
 
-LinearLayout chooseLdMatrixLayout(Attribute enc, ArrayRef<int64_t> shape,
-                                  bool needTrans, int32_t elemBitWidth) {
-  auto dot = cast<DotOperandEncodingAttr>(enc);
-  return chooseDotLdMatrixLayout(dot, shape, needTrans, elemBitWidth);
+std::optional<LoadStoreMatrixConfig>
+chooseLoadMatrixConfig(MemdescType srcTy, RankedTensorType dstTy) {
+  auto bitWidth = dstTy.getElementTypeBitWidth();
+  auto srcEnc = cast<SharedEncodingAttr>(srcTy.getEncoding());
+  auto dstEnc = dstTy.getEncoding();
+  auto shape = dstTy.getShape();
+  auto srcLL = toLinearLayout(shape, srcEnc, bitWidth);
+  auto dstLL = toLinearLayout(shape, dstEnc);
+
+  // TODO(Keren): Remove legacy checks
+  if (srcEnc.getHasLeadingOffset() || shape.size() > 2)
+    return std::nullopt;
+
+  auto consecSize = srcLL.getNumConsecutiveInOut();
+  if (consecSize * bitWidth < 8 * 16)
+    return std::nullopt;
+
+  auto ctx = dstTy.getContext();
+  auto kReg = S("register");
+  auto kLane = S("lane");
+  auto regBases = dstLL.getBases().lookup(kReg);
+  auto numRegBases = llvm::Log2_32(32 / bitWidth) + 1;
+  int consecRegDim = -1;
+
+  for (auto outDim = 0; outDim < dstLL.getNumOutDims(); ++outDim) {
+    if (std::all_of(regBases.begin(), regBases.begin() + numRegBases,
+                    [&](auto base) { return base[outDim] == (1 << base); })) {
+      consecRegDim = outDim;
+      break;
+    }
+  }
+
+  if (consecRegDim == -1)
+    return std::nullopt;
+
+  auto laneBases = dstLL.getBases().lookup(kLane);
+  auto numLaneBases = 2;
+  if (!std::all_of(
+          laneBases.begin(), laneBases.begin() + numLaneBases,
+          [&](auto base) { return base[consecRegDim] == (1 << base); }))
+    return std::nullopt;
+
+  auto otherDim = 1 - consecRegDim;
+  if (!std::all_of(laneBases.begin() + numLaneBases, laneBases.begin() + 3,
+                   [&](auto base) {
+                     return base[otherDim] == (1 << (base + numLaneBases));
+                   }))
+    return std::nullopt;
+
+  LoadStoreMatrixConfig config;
+  if (getOrder(srcEnc)[0] != consecRegDim)
+    config.trans = true;
+
+  if ((shape[0] % 8 == 0) && (shape[1] % 8 == 0)) {
+    unsigned x = (shape[0] % 16 == 0) ? 2 : 1;
+    unsigned y = (shape[1] % 16 == 0) ? 2 : 1;
+    config.numTiles = {x, y};
+  }
+
+  if (config.numTiles.empty())
+    return std::nullopt;
+
+  return config;
 }
 
 } // namespace mlir::triton::gpu

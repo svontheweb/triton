@@ -252,10 +252,16 @@ LinearLayout chooseShemLayoutForRegToRegConversion(
 LinearLayout chooseStMatrixLayout(MLIRContext *ctx, RankedTensorType tensorTy,
                                   int swizzleByteSize);
 
+struct LoadStoreMatrixConfig {
+  bool trans{};
+  SmallVector<unsigned> numTiles{};
+};
+
 // The primary goal of this function is to efficiently store 2D tiles of a
 // tensor into shared memory using the `ldmatrix` instruction.
-LinearLayout chooseLdMatrixLayout(Attribute enc, ArrayRef<int64_t> shape,
-                                  bool needTrans, int32_t elemBitWidth);
+std::optional<LoadStoreMatrixConfig>
+chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy);
+
 } // namespace mlir::triton::gpu
 
 #endif // TRITON_DIALECT_TRITONGPU_IR_LINEARLAYOUTCONVERSIONS_H

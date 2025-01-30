@@ -1094,7 +1094,7 @@ struct AsyncCopyGlobalToLocalOpConversion
     SmallVector<Value> shmemAddrs;
     bool ok = emitTransferBetweenRegistersAndShared(
         srcTy, dstTy, resElemTy, maxVec, smemObj, loc, rewriter, targetInfo,
-        [&](VectorType vecTy_, Value shmemAddr) {
+        std::nullopt, [&](VectorType vecTy_, Value shmemAddr) {
           vecTy = vecTy_;
           shmemAddrs.push_back(shmemAddr);
         });

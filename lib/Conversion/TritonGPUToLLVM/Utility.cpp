@@ -189,8 +189,6 @@ emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
   return ret;
 }
 
-namespace {
-
 Value getSmemVecAddr(const LinearLayout &regLayout,
                      const LinearLayout &regToSharedLayout,
                      const LinearLayout &invertAllocSharedLayout,
@@ -301,12 +299,12 @@ Value getSmemVecAddr(const LinearLayout &regLayout,
   return vecAddr;
 }
 
-} // namespace
-
 bool emitTransferBetweenRegistersAndShared(
-    LinearLayout &regLayout, triton::gpu::MemDescType sharedTy, Type elemLlvmTy,
-    std::optional<int32_t> maxVecElems, const SharedMemoryObject &smemObj,
-    Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
+    RankedTensorType registerTy, triton::gpu::MemDescType sharedTy,
+    Type elemLlvmTy, std::optional<int32_t> maxVecElems,
+    const SharedMemoryObject &smemObj, Location loc, RewriterBase &rewriter,
+    const TargetInfoBase &target,
+    std::optional<std::tuple<Value, Value, Value>> hardwareTuple = std::nullopt,
     std::function<void(VectorType, Value /*shmemAddr*/)> perVectorCallback) {
   MLIRContext *ctx = rewriter.getContext();
   auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -317,6 +315,9 @@ bool emitTransferBetweenRegistersAndShared(
   StringAttr kWarp = str_attr("warp");
 
   auto shape = sharedTy.getShape();
+  auto regLayout = triton::gpu::toLinearLayout(
+      registerTy.getShape(), registerTy.getEncoding(),
+      elemLlvmTy.getIntOrFloatBitWidth());
   LinearLayout sharedLayout = triton::gpu::toLinearLayout(
       shape, sharedTy.getEncoding(), elemLlvmTy.getIntOrFloatBitWidth());
   LinearLayout regToSharedLayout = regLayout.invertAndCompose(sharedLayout);
@@ -350,8 +351,10 @@ bool emitTransferBetweenRegistersAndShared(
 
   auto withCTAOffset = triton::gpu::getNumCTAs(sharedTy.getEncoding()) > 1;
   auto [laneId, warpId, blockId] =
-      emitHardwareTuple(loc, rewriter, target, withCTAOffset,
-                        regToSharedLayout.getInDimSize(kLane));
+      hardwareTuple.has_value()
+          ? hardwareTuple.value()
+          : emitHardwareTuple(loc, rewriter, target, withCTAOffset,
+                              regToSharedLayout.getInDimSize(kLane));
 
   // For kernels with a single CTA, `allocSharedLayout.sublayout(S("block"),
   // outDims) == 0`. We need to take out the "block" dimension in order to use
@@ -380,20 +383,6 @@ bool emitTransferBetweenRegistersAndShared(
   return true;
 }
 
-bool emitTransferBetweenRegistersAndShared(
-    RankedTensorType registerTy, triton::gpu::MemDescType sharedTy,
-    Type elemLlvmTy, std::optional<int32_t> maxVecElems,
-    const SharedMemoryObject &smemObj, Location loc, RewriterBase &rewriter,
-    const TargetInfoBase &target,
-    std::function<void(VectorType, Value /*shmemAddr*/)> perVectorCallback) {
-  auto regLayout = triton::gpu::toLinearLayout(
-      registerTy.getShape(), registerTy.getEncoding(),
-      elemLlvmTy.getIntOrFloatBitWidth());
-  return emitTransferBetweenRegistersAndShared(
-      regLayout, sharedTy, elemLlvmTy, maxVecElems, smemObj, loc, rewriter,
-      target, perVectorCallback);
-}
-
 SmallVector<Value> loadSharedToDistributed(RankedTensorType dstTy,
                                            triton::gpu::MemDescType srcTy,
                                            Type elemLlvmTy,
@@ -404,7 +393,8 @@ SmallVector<Value> loadSharedToDistributed(RankedTensorType dstTy,
   SmallVector<Value> ret;
   bool success = emitTransferBetweenRegistersAndShared(
       dstTy, srcTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemObj, loc,
-      rewriter, target, [&](VectorType vecTy, Value vecAddr) {
+      rewriter, target, /*hardwareTuple=*/std::nullopt,
+      [&](VectorType vecTy, Value vecAddr) {
         auto vecVal = b.load(vecTy, vecAddr);
         vecVal.setAlignment(vecTy.getNumElements() *
                             elemLlvmTy.getIntOrFloatBitWidth() / 8);
@@ -429,7 +419,8 @@ void storeDistributedToShared(triton::gpu::MemDescType dstTy,
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   bool success = emitTransferBetweenRegistersAndShared(
       srcTy, dstTy, elemLlvmTy, /*maxVecElems=*/std::nullopt, smemObj, loc,
-      rewriter, target, [&](VectorType vecTy, Value vecAddr) {
+      rewriter, target, /*hardwareTuple=*/std::nullopt,
+      [&](VectorType vecTy, Value vecAddr) {
         ArrayRef<Value> vals = srcVals.take_front(vecTy.getNumElements());
         srcVals = srcVals.drop_front(vecTy.getNumElements());
 
