@@ -15,6 +15,11 @@ using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gpu;
 
+struct LoadStoreMatrixConfig {
+  bool trans{};
+  unsigned numTiles{};
+};
+
 struct LocalLoadOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
 public:
@@ -66,6 +71,43 @@ public:
   }
 
 private:
+  std::optional<LoadStoreMatrixConfig>
+  canApplyLoadMatrix(MemDescType srcTy, RankedTensorType dstTy) const {
+    auto bitWidth = dstTy.getElementTypeBitWidth();
+    auto srcEnc = cast<SharedEncodingAttr>(srcTy.getEncoding());
+    auto dstEnc = dstTy.getEncoding();
+    auto shape = dstTy.getShape();
+    auto srcLL = toLinearLayout(shape, srcEnc, bitWidth);
+    auto dstLL = toLinearLayout(shape, dstEnc);
+    // TODO(Keren): Remove legacy checks
+    if (srcEnc.getHasLeadingOffset() || shape.size() > 2)
+      return std::nullopt;
+    // Step 1: Check contig size of srcLL
+    auto consecSize = srcLL.getNumConsecutiveInOut();
+    if (consecSize * bitWidth < 8 * 16) {
+      return std::nullopt;
+    }
+    // Step 2: Check bases of dstLL
+    auto ctx = dstTy.getContext();
+    auto kReg = str_attr("register");
+    auto kLane = str_attr("lane");
+    auto kWarp = str_attr("warp");
+    auto kBlock = str_attr("block");
+    auto numRegBases = llvm::Log2_32(32 / bitWidth) + 1;
+    auto numLaneBases = 2;
+    auto order = getOrder(dstEnc);
+    auto threadOrder = getThreadOrder(dstEnc);
+    for (auto i = 0; i < numRegBases; ++i) {
+      auto coordinates = dstLL.apply({
+          {kReg, i == 0 ? 0 : 1 << (i - 1)},
+          {kLane, 0},
+          {kWarp, 0},
+          {kBlock, 0},
+      });
+    }
+    // Step 3: Get the number of tiles
+  }
+
   LogicalResult
   lowerSharedToDotOperand(triton::gpu::LocalLoadOp op,
                           triton::gpu::LocalLoadOpAdaptor adaptor,
