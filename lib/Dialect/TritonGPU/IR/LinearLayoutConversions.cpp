@@ -1111,7 +1111,7 @@ LinearLayout chooseStMatrixLayout(MLIRContext *ctx, RankedTensorType tensorTy,
 }
 
 std::optional<LoadStoreMatrixConfig>
-chooseLoadMatrixConfig(MemdescType srcTy, RankedTensorType dstTy) {
+chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy) {
   auto bitWidth = dstTy.getElementTypeBitWidth();
   auto srcEnc = cast<SharedEncodingAttr>(srcTy.getEncoding());
   auto dstEnc = dstTy.getEncoding();
@@ -1123,45 +1123,13 @@ chooseLoadMatrixConfig(MemdescType srcTy, RankedTensorType dstTy) {
   if (srcEnc.getHasLeadingOffset() || shape.size() > 2)
     return std::nullopt;
 
+  // Step 1: Check if the source layout is aligned properly
   auto consecSize = srcLL.getNumConsecutiveInOut();
   if (consecSize * bitWidth < 8 * 16)
     return std::nullopt;
 
-  auto ctx = dstTy.getContext();
-  auto kReg = S("register");
-  auto kLane = S("lane");
-  auto regBases = dstLL.getBases().lookup(kReg);
-  auto numRegBases = llvm::Log2_32(32 / bitWidth) + 1;
-  int consecRegDim = -1;
-
-  for (auto outDim = 0; outDim < dstLL.getNumOutDims(); ++outDim) {
-    if (std::all_of(regBases.begin(), regBases.begin() + numRegBases,
-                    [&](auto base) { return base[outDim] == (1 << base); })) {
-      consecRegDim = outDim;
-      break;
-    }
-  }
-
-  if (consecRegDim == -1)
-    return std::nullopt;
-
-  auto laneBases = dstLL.getBases().lookup(kLane);
-  auto numLaneBases = 2;
-  if (!std::all_of(
-          laneBases.begin(), laneBases.begin() + numLaneBases,
-          [&](auto base) { return base[consecRegDim] == (1 << base); }))
-    return std::nullopt;
-
-  auto otherDim = 1 - consecRegDim;
-  if (!std::all_of(laneBases.begin() + numLaneBases, laneBases.begin() + 3,
-                   [&](auto base) {
-                     return base[otherDim] == (1 << (base + numLaneBases));
-                   }))
-    return std::nullopt;
-
+  // Step 2: Check the size of the tensor
   LoadStoreMatrixConfig config;
-  if (getOrder(srcEnc)[0] != consecRegDim)
-    config.trans = true;
 
   if ((shape[0] % 8 == 0) && (shape[1] % 8 == 0)) {
     unsigned x = (shape[0] % 16 == 0) ? 2 : 1;
@@ -1171,6 +1139,54 @@ chooseLoadMatrixConfig(MemdescType srcTy, RankedTensorType dstTy) {
 
   if (config.numTiles.empty())
     return std::nullopt;
+
+  // Step 3: Check if the first three bases are (0, 1), (1, 0), (2, 0)
+  // with denotation (register, lane)
+  auto ctx = dstTy.getContext();
+  auto kReg = S("register");
+  auto kLane = S("lane");
+  auto regBases = dstLL.getBases().lookup(kReg);
+  auto numRegBases = llvm::Log2_32(32 / bitWidth) + 1;
+  int consecRegDim = -1;
+
+  for (auto outDim = 0; outDim < dstLL.getNumOutDims(); ++outDim) {
+    if (std::all_of(regBases.begin(), regBases.begin() + numRegBases,
+                    [&](auto base) {
+                      return base[outDim] ==
+                             (1 << std::distance(regBases.begin(), &base));
+                    })) {
+      consecRegDim = outDim;
+      break;
+    }
+  }
+  auto laneBases = dstLL.getBases().lookup(kLane);
+  auto numLaneBases = 0;
+  if (consecRegDim != -1) {
+    numLaneBases = 2;
+    if (!std::all_of(laneBases.begin(), laneBases.begin() + numLaneBases,
+                     [&](auto base) {
+                       return base[consecRegDim] ==
+                              (1 << (std::distance(laneBases.begin(), &base) +
+                                     numRegBases));
+                     }))
+      return std::nullopt;
+  } else {
+    // Step 4: Transpose mode, check if the first three bases are (0, 1), (0,
+    // 2), (0, 4) with denotation (register, lane)
+    auto otherDim = 1 - consecRegDim;
+    numLaneBases = 3;
+    if (!std::all_of(laneBases.begin(), laneBases.begin() + numLaneBases,
+                     [&](auto base) {
+                       return base[otherDim] ==
+                              (1 << std::distance(laneBases.begin(), &base));
+                     }))
+      return std::nullopt;
+    config.trans = true;
+  }
+
+  // Step 5: Check all other bases do not overlap the first few bases
+  for (auto [baseName, bases] : dstLL.getBases()) {
+  }
 
   return config;
 }
