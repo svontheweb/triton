@@ -1124,24 +1124,21 @@ chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy) {
     return std::nullopt;
 
   // Step 1: Check if the source layout is aligned properly
-  auto consecSize = srcLL.getNumConsecutiveInOut();
-  if (consecSize * bitWidth < 8 * 16)
+  if (srcLL.flattenOuts().getNumConsecutiveInOut() * bitWidth < 8 * 16)
     return std::nullopt;
 
   // Step 2: Check the size of the tensor
   LoadStoreMatrixConfig config;
-
   if ((shape[0] % 8 == 0) && (shape[1] % 8 == 0)) {
     unsigned x = (shape[0] % 16 == 0) ? 2 : 1;
     unsigned y = (shape[1] % 16 == 0) ? 2 : 1;
     config.numTiles = {x, y};
   }
-
   if (config.numTiles.empty())
     return std::nullopt;
 
-  // Step 3: Check if the first three bases are (0, 1), (1, 0), (2, 0)
-  // with denotation (register, lane)
+  // Step 3: Check if the first three bases are (0, 1), (1, 0), and (2, 0),
+  // interpreted as (register, lane).
   auto ctx = dstTy.getContext();
   auto kReg = S("register");
   auto kLane = S("lane");
@@ -1159,23 +1156,27 @@ chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy) {
       break;
     }
   }
+  if (consecRegDim == -1)
+    return std::nullopt;
+
   auto laneBases = dstLL.getBases().lookup(kLane);
-  auto numLaneBases = 0;
-  if (consecRegDim != -1) {
-    numLaneBases = 2;
-    if (!std::all_of(laneBases.begin(), laneBases.begin() + numLaneBases,
-                     [&](auto base) {
-                       return base[consecRegDim] ==
-                              (1 << (std::distance(laneBases.begin(), &base) +
-                                     numRegBases));
-                     }))
-      return std::nullopt;
-  } else {
-    // Step 4: Transpose mode, check if the first three bases are (0, 1), (0,
-    // 2), (0, 4) with denotation (register, lane)
-    auto otherDim = 1 - consecRegDim;
-    numLaneBases = 3;
-    if (!std::all_of(laneBases.begin(), laneBases.begin() + numLaneBases,
+  auto numLaneBases = 2;
+  if (!std::all_of(laneBases.begin(), laneBases.begin() + numLaneBases,
+                   [&](auto base) {
+                     return base[consecRegDim] ==
+                            (1 << (std::distance(laneBases.begin(), &base) +
+                                   numRegBases));
+                   }))
+    return std::nullopt;
+
+  auto otherDim = getOrder(srcEnc)[0];
+  auto numLaneBasesTrans = 0;
+  if (otherDim != consecRegDim) {
+    // Step 4: Transpose mode, check if the next few lane bases are (1, 0), (2,
+    // 0), (4, 0) interpreted as (register, lane)
+    numLaneBasesTrans = 3;
+    if (!std::all_of(laneBases.begin() + numLaneBases,
+                     laneBases.begin() + numLaneBases + numLaneBasesTrans,
                      [&](auto base) {
                        return base[otherDim] ==
                               (1 << std::distance(laneBases.begin(), &base));
@@ -1186,6 +1187,18 @@ chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy) {
 
   // Step 5: Check all other bases do not overlap the first few bases
   for (auto [baseName, bases] : dstLL.getBases()) {
+    auto beginBasis = (baseName == kReg)    ? numRegBases
+                      : (baseName == kLane) ? numLaneBases + numLaneBasesTrans
+                                            : 0;
+    for (auto [index, basis] : llvm::enumerate(bases)) {
+      if (index < beginBasis)
+        continue;
+      if (basis[consecRegDim] != 0 &&
+          basis[consecRegDim] < (1 << (numRegBases + numLaneBases)))
+        return std::nullopt;
+      if (basis[otherDim] != 0 && basis[otherDim] < (1 << numLaneBasesTrans))
+        return std::nullopt;
+    }
   }
 
   return config;
