@@ -5,6 +5,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
+#include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include "triton/Tools/StrUtil.h"
@@ -1111,9 +1112,10 @@ LinearLayout chooseStMatrixLayout(MLIRContext *ctx, RankedTensorType tensorTy,
 }
 
 std::optional<LoadStoreMatrixConfig>
-chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy) {
+chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
+  auto memdescTy = srcTy.dyn_cast<MemDescType>();
   auto bitWidth = dstTy.getElementTypeBitWidth();
-  auto srcEnc = cast<SharedEncodingAttr>(srcTy.getEncoding());
+  auto srcEnc = cast<SharedEncodingAttr>(memdescTy.getEncoding());
   auto dstEnc = dstTy.getEncoding();
   auto shape = dstTy.getShape();
   auto srcLL = toLinearLayout(shape, srcEnc, bitWidth);

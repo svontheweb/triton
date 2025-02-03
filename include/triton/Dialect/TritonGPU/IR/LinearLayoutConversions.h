@@ -257,12 +257,10 @@ struct LoadStoreMatrixConfig {
   SmallVector<unsigned> numTiles{};
 };
 
-class MemDescType;
-
 // The primary goal of this function is to efficiently store 2D tiles of a
 // tensor into shared memory using the `ldmatrix` instruction.
 std::optional<LoadStoreMatrixConfig>
-chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy);
+chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy);
 
 } // namespace mlir::triton::gpu
 
