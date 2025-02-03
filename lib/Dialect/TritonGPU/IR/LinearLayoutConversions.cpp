@@ -1180,6 +1180,9 @@ chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
     otherDim = getOrder(srcEnc)[1];
   }
 
+  if (config.trans && bitWidth != 16)
+    return std::nullopt;
+
   // Check if the lane bases are consecutive
   auto numLaneBasesOther = 3;
   if (!isAllInSequence(laneBases, /*start=*/numLaneBases,
