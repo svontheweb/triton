@@ -1148,7 +1148,7 @@ chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
                              int shift) {
     return std::all_of(vec.begin() + start, vec.begin() + start + count,
                        [&](auto base) {
-                         int idx = std::distance(vec.begin(), &base) - start;
+                         int idx = &base - (vec.begin() + start);
                          return base[dim] == (1 << (idx + shift));
                        });
   };
@@ -1173,20 +1173,23 @@ chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
   // If the access order of the shared memory is not the same as the
   // access order of the registers, we need to transpose the data
   auto otherDim = getOrder(srcEnc)[0];
-  auto numLaneBasesTrans = 0;
   if (otherDim != consecRegDim) {
-    numLaneBasesTrans = 3;
-    if (!isAllInSequence(laneBases, /*start=*/numLaneBases,
-                         /*count=*/numLaneBasesTrans, /*dim=*/otherDim,
-                         /*shift=*/0))
-      return std::nullopt;
     config.trans = true;
+  } else {
+    otherDim = getOrder(srcEnc)[1];
   }
+
+  // Check if the lane bases are consecutive
+  auto numLaneBasesOther = 3;
+  if (!isAllInSequence(laneBases, /*start=*/numLaneBases,
+                       /*count=*/numLaneBasesOther, /*dim=*/otherDim,
+                       /*shift=*/numLaneBases))
+    return std::nullopt;
 
   // Check if other bases overlap with the register and lane bases
   for (auto &[baseName, bases] : dstLL.getBases()) {
     auto beginBasis = (baseName == kReg)    ? numRegBases
-                      : (baseName == kLane) ? numLaneBases + numLaneBasesTrans
+                      : (baseName == kLane) ? numLaneBases + numLaneBasesOther
                                             : 0;
     for (auto [index, basis] : llvm::enumerate(bases)) {
       if (index < beginBasis)
