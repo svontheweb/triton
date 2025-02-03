@@ -1113,7 +1113,7 @@ LinearLayout chooseStMatrixLayout(MLIRContext *ctx, RankedTensorType tensorTy,
 
 std::optional<LoadStoreMatrixConfig>
 chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
-  auto memdescTy = srcTy.dyn_cast<MemDescType>();
+  auto memdescTy = cast<MemDescType>(srcTy);
   auto bitWidth = dstTy.getElementTypeBitWidth();
   auto srcEnc = cast<SharedEncodingAttr>(memdescTy.getEncoding());
   auto dstEnc = dstTy.getEncoding();
@@ -1146,11 +1146,12 @@ chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
   // Helper lambda to check consecutive powers of two
   auto isAllInSequence = [&](auto &vec, int start, int count, int dim,
                              int shift) {
-    return std::all_of(vec.begin() + start, vec.begin() + start + count,
-                       [&](auto base) {
-                         int idx = &base - (vec.begin() + start);
-                         return base[dim] == (1 << (idx + shift));
-                       });
+    for (int idx = 0; idx < count; ++idx) {
+      if (vec[start + idx][dim] != (1 << (idx + shift))) {
+        return false;
+      }
+    }
+    return true;
   };
 
   // Find out the output dimension where the registers are consecutive
@@ -1197,7 +1198,7 @@ chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
       if (basis[consecRegDim] != 0 &&
           basis[consecRegDim] < (1 << (numRegBases + numLaneBases)))
         return std::nullopt;
-      if (basis[otherDim] != 0 && basis[otherDim] < (1 << numLaneBasesTrans))
+      if (basis[otherDim] != 0 && basis[otherDim] < (1 << numLaneBasesOther))
         return std::nullopt;
     }
   }
