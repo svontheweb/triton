@@ -1180,6 +1180,7 @@ chooseLoadMatrixConfig(Type srcTy, RankedTensorType dstTy) {
     otherDim = getOrder(srcEnc)[1];
   }
 
+  // Transpose mode is only supported for 16-bit elements
   if (config.trans && bitWidth != 16)
     return std::nullopt;
 
