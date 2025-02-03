@@ -1151,8 +1151,10 @@ chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy) {
                        });
   };
 
+  // Find out the output dimension where the registers are consecutive
   for (auto outDim = 0; outDim < dstLL.getNumOutDims(); ++outDim) {
-    if (isAllInSequence(regBases, 0, numRegBases, outDim, 0)) {
+    if (isAllInSequence(regBases, /*start=*/0, /*count=*/numRegBases,
+                        /*dim=*/outDim, /*shift=*/0)) {
       consecRegDim = outDim;
       break;
     }
@@ -1162,19 +1164,24 @@ chooseLoadMatrixConfig(MemDescType srcTy, RankedTensorType dstTy) {
 
   auto laneBases = dstLL.getBases().lookup(kLane);
   auto numLaneBases = 2;
-  if (!isAllInSequence(laneBases, 0, numLaneBases, consecRegDim, numRegBases))
+  if (!isAllInSequence(laneBases, /*start=*/0, /*count=*/numLaneBases,
+                       /*dim=*/consecRegDim, /*shift=*/numRegBases))
     return std::nullopt;
 
+  // If the access order of the shared memory is not the same as the
+  // access order of the registers, we need to transpose the data
   auto otherDim = getOrder(srcEnc)[0];
   auto numLaneBasesTrans = 0;
   if (otherDim != consecRegDim) {
     numLaneBasesTrans = 3;
-    if (!isAllInSequence(laneBases, numLaneBases, numLaneBasesTrans, otherDim,
-                         0))
+    if (!isAllInSequence(laneBases, /*start=*/numLaneBases,
+                         /*count=*/numLaneBasesTrans, /*dim=*/otherDim,
+                         /*shift=*/0))
       return std::nullopt;
     config.trans = true;
   }
 
+  // Check if other bases overlap with the register and lane bases
   for (auto &[baseName, bases] : dstLL.getBases()) {
     auto beginBasis = (baseName == kReg)    ? numRegBases
                       : (baseName == kLane) ? numLaneBases + numLaneBasesTrans
