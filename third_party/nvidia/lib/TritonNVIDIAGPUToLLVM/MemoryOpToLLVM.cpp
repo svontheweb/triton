@@ -47,7 +47,6 @@ private:
     auto srcTy = cast<MemDescType>(op.getSrc().getType());
     auto dstTy = op.getType();
 
-    auto bitWidth = dstTy.getElementTypeBitWidth();
     auto dstEnc = dstTy.getEncoding();
     auto shape = dstTy.getShape();
     auto dstLL = toLinearLayout(shape, dstEnc);
