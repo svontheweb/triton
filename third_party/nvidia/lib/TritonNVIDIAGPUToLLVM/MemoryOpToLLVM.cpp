@@ -79,7 +79,7 @@ private:
     std::tuple<Value, Value, Value> targetHardwareTuple = {targetLaneId, warpId,
                                                            blockId};
 
-    auto ret = emitTransferBetweenRegistersAndShared(
+    auto valid = emitTransferBetweenRegistersAndShared(
         dstTy, srcTy, llvmElemTy, regVec, smemObj, loc, rewriter, targetInfo,
         targetHardwareTuple, [&](VectorType vecTy, Value vecAddr) {
           auto ldMatrixOp = rewriter.create<nvgpu::LoadMatrixOp>(
@@ -88,7 +88,7 @@ private:
           for (int i = 0; i < numElemsI32PerTile; ++i)
             elemsI32.push_back(b.extract_val(i32_ty, res, i));
         });
-    assert(ret && "Failed to emit transfer from shared to register");
+    assert(valid && "Failed to emit transfer from shared to register");
 
     // Unpack i32 values to the original type
     SmallVector<Value> elems;
