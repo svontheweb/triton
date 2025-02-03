@@ -1180,7 +1180,7 @@ emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
     Type elemLlvmTy, std::optional<int32_t> maxVecElems,
     const SharedMemoryObject &smemObj, Location loc, RewriterBase &rewriter,
     const TargetInfoBase &target,
-    std::optional<std::tuple<Value, Value, Value>> hardwareTuple = std::nullopt,
+    std::optional<std::tuple<Value, Value, Value>> hardwareTuple,
     std::function<void(VectorType, Value /*shmemAddr*/)> perVectorCallback);
 
 SmallVector<Value> loadSharedToDistributed(RankedTensorType dstTy,
